@@ -408,7 +408,6 @@ export default function MicroLifeLite(){
 pherTickRef.current += dt;
 if (pherTickRef.current >= 2) {
   pherTickRef.current = 0;
-dmgAB 
   // 1) clusters determinísticos del mapa actual
   const clusters = computeFoodClusters(newFood, 60, 8);
   const maxNestDist = 260; // opcional: ignorar clusters muy lejos del nido
@@ -591,8 +590,19 @@ for (const victim of newCrits){
           if (prey) c.target = { type:'hunt', x: prey.x, y: prey.y, preyId: prey.id };
           else { const wt = pickWanderTarget(c, now, 1); c.target = { type:'wander', x: wt.x, y: wt.y }; }
         }
-      } 
-      else if (c.role==='qguard') {
+      } else if (c.role==='queen') {
+  // si no tiene objetivo, elige uno “con propósito” (aleatorio pero lejano)
+  if (!c.target || c.target.type!=='expand'){
+    const ang = Math.random()*Math.PI*2;
+    const d   = 180 + Math.random()*140;
+    const tx  = clamp(c.x + Math.cos(ang)*d, 20, W-20);
+    const ty  = clamp(c.y + Math.sin(ang)*d, 20, H-20);
+    c.target = { type:'expand', x:tx, y:ty };
+  }
+  // velocidad lenta
+  // (dejá el cálculo de spd global; si querés extra-lento podés multiplicar aquí)
+  // c.x/c.y se actualizan abajo como todos
+} else if (c.role==='qguard') {
   // orbitar alrededor de la Reina asignada
   const queen = newCrits.find(u=>u.id===c.orbitAroundId);
   if (queen){
@@ -614,9 +624,7 @@ for (const victim of newCrits){
       c.target = { type:'wander', x: wt.x, y: wt.y };
     }
   }
-}
-
-      else if (c.role==='guardian') {
+} else if (c.role==='guardian') {
         if (homeNest){
           // 1) Primero, buscar BEHEMOTH cerca del nido (prioridad absoluta)
           let targetB=null, bestD2B=Infinity; const aggroRBehe=140;
@@ -657,36 +665,54 @@ if (qTarget){
         if (bestNest) c.target={type:'siege', x:bestNest.x, y:bestNest.y, nestId:bestNest.id}; else { const wt = pickWanderTarget(c, now, 0.6); c.target={type:'wander', x:wt.x, y:wt.y}; }
       } else if (c.role==='cocoon') {
         c.target = null; // inmóvil
-      } else if (rally && rally.active) {
+            } else if (rally && rally.active) {
         c.target = { type: 'rally', x: rally.x, y: rally.y };
       } else if (c.carryMax > 0 && c.carried >= c.carryMax && homeNest) {
         c.target = { type: 'nest', x: homeNest.x, y: homeNest.y }; c.idleTime = 0; c.visionCells = 1;
       } else {
-        const seen = findFoodInGrid(c, newFood, c.visionCells);
-        if (seen) { c.target = { type:'food', id:seen.id, x:seen.x, y:seen.y }; c.idleTime=0; c.visionCells=1; }
-        else {
-          // 🔵 Si hay nube de feromonas de mi facción, voy hacia ella; si no, wander original
-          const cloud = pheromonesRef.current?.[c.faction];
-          if (cloud) {
-            const jitter = 6; // que no se apilen
-            const jx = (Math.random()-0.5)*jitter;
-            const jy = (Math.random()-0.5)*jitter;
-            c.target = { type:'pher', x: clamp(cloud.x + jx, 8, W-8), y: clamp(cloud.y + jy, 8, H-8) };
-            // expandir visión con el tiempo igualmente
-            c.idleTime += (1/60);
-            if (c.idleTime >= 0.75) { c.idleTime=0; c.visionCells=Math.min(c.visionCells+1,10); }
+        // 👇 NUEVO: primero evaluamos amenaza (guerrero enemigo) y huimos
+        const threat = findNearestEnemyWarrior(c, newCrits, 70);
+        if (threat){
+          const dx = c.x - threat.x, dy = c.y - threat.y;
+          const L = Math.hypot(dx,dy)||1;
+          const fleeDist = 60;
+          const fx = clamp(c.x + (dx/L)*fleeDist, 8, W-8);
+          const fy = clamp(c.y + (dy/L)*fleeDist, 8, H-8);
+          c.target = { type:'flee', x: fx, y: fy };
+        } else {
+          // 🧠 SIN AMENAZA: se mantiene tu lógica tal cual (food → feromonas → wander)
+          const seen = findFoodInGrid(c, newFood, c.visionCells);
+          if (seen) {
+            c.target = { type:'food', id:seen.id, x:seen.x, y:seen.y };
+            c.idleTime=0; c.visionCells=1;
           } else {
-            c.idleTime += (1/60); if (c.idleTime >= 0.75) { c.idleTime=0; c.visionCells=Math.min(c.visionCells+1,10); }
-            const scarcity = Math.max(0.8, 1.4 - newFood.length/250); const wt = pickWanderTarget(c, now, scarcity); c.target = { type:'wander', x: wt.x, y: wt.y };
+            // 🔵 Si hay nube de feromonas de mi facción, voy hacia ella; si no, wander original
+            const cloud = pheromonesRef.current?.[c.faction];
+            if (cloud) {
+              const jitter = 6; // que no se apilen
+              const jx = (Math.random()-0.5)*jitter;
+              const jy = (Math.random()-0.5)*jitter;
+              c.target = { type:'pher', x: clamp(cloud.x + jx, 8, W-8), y: clamp(cloud.y + jy, 8, H-8) };
+              // expandir visión con el tiempo igualmente
+              c.idleTime += (1/60);
+              if (c.idleTime >= 0.75) { c.idleTime=0; c.visionCells=Math.min(c.visionCells+1,10); }
+            } else {
+              c.idleTime += (1/60);
+              if (c.idleTime >= 0.75) { c.idleTime=0; c.visionCells=Math.min(c.visionCells+1,10); }
+              const scarcity = Math.max(0.8, 1.4 - newFood.length/250);
+              const wt = pickWanderTarget(c, now, scarcity);
+              c.target = { type:'wander', x: wt.x, y: wt.y };
+            }
           }
         }
       }
 
+
       // integrar velocidad por rol
 const baseSpeed = (c.role==='behemoth') ? 0.6 : (c.role==='guardian') ? 1.0 : 1.05;
 const rallyBoost = (rally && rally.active && c.role==='worker') ? 1.35 : 1;
-const hungerMul = (c.hungry ? HUNGRY_SPD_MUL : 1);     // ← NUEVO
-const spd = baseSpeed * rallyBoost * hungerMul;        // ← CAMBIADO
+const spd = baseSpeed * rallyBoost;
+
 
       const tx = c.target?.x ?? c.x, ty = c.target?.y ?? c.y; const dx = tx - c.x, dy = ty - c.y; const L = Math.hypot(dx,dy)||1;
       let nx=c.x + (dx/L)*spd, ny=c.y + (dy/L)*spd;
@@ -695,6 +721,25 @@ const spd = baseSpeed * rallyBoost * hungerMul;        // ← CAMBIADO
       const dxT = nx - TREE.x, dyT = ny - TREE.y; const dT = Math.hypot(dxT, dyT);
       if (dT < TREE.r + c.radius) { const nxn = dxT / (dT || 1), nyn = dyT / (dT || 1); nx = TREE.x + (TREE.r + c.radius) * nxn; ny = TREE.y + (TREE.r + c.radius) * nyn; }
       c.x = clamp(nx, 6, W-6); c.y = clamp(ny, 6, H-6);
+      // Si es Reina y llegó al destino de expansión, funda nido
+if (c.role==='queen' && c.target && c.target.type==='expand'){
+  const dx = c.target.x - c.x, dy = c.target.y - c.y;
+  if (Math.hypot(dx,dy) < 6){
+    const pos = resolveNestPlacement(c.x, c.y, newNests);
+    newNests.push({
+      id: crypto.randomUUID(),
+      faction: c.faction,
+      x: pos.x, y: pos.y,
+      food: 0, cumFood: 0, level: 0, hp: 60,
+      nextSpawnAt: now + 10
+    });
+    // Asignar la Reina al nuevo nido
+    c.homeNestId = newNests[newNests.length-1].id;
+    // Elegir siguiente objetivo de expansión (opcional)
+    c.target = null;
+  }
+}
+
     }
 
     // Evolución: guerrero 6★ → cocoon en nido; cocoon → behemoth
@@ -788,30 +833,48 @@ const spd = baseSpeed * rallyBoost * hungerMul;        // ← CAMBIADO
 
     // Producción de nidos: 1 worker/10s y guerreros por cada 10 de FOOD disponible
     for (const n of newNests){
-      if(now>=(n.nextSpawnAt??0)){
-        n.nextSpawnAt=(n.nextSpawnAt??now)+10; const baby=spawnCritter(rng,n.faction,n.x,n.y,'worker');
-        const thetaN=Math.random()*Math.PI*2; startMitosis(baby,n.x,n.y,thetaN,now,18,0.6); toAdd.push(baby);
-      }
-      // caps dinámicos por nivel del nido
-      const capW = (n.level??0) + 1;               // warriors permitidos (L1→2, L2→3, ...)
-      let curW = newCrits.filter(u=>u.role==='warrior' && u.homeNestId===n.id).length;
-      while ((n.food||0) >= 10){
-        if (curW >= capW) break; // alcanzado el tope
-        n.food -= 10; const w=spawnCritter(rng,n.faction,n.x,n.y,'warrior'); w.hp=12; w.maxHp=12; w.dps=2;
-        w.homeNestId = n.id;
-        const th=Math.random()*Math.PI*2; startMitosis(w,n.x,n.y,th,now,20,0.5); toAdd.push(w);
-        curW++;
-      }
-      // --- Upkeep de guerreros y marca de hambre ---
-{
-  const warList = newCrits.filter(u => u.role==='warrior' && u.homeNestId===n.id);
-  const drain = WARRIOR_UPKEEP * warList.length * dt;
-  n.food = Math.max(0, (n.food || 0) - drain);
-  const hungry = n.food <= 0.0001;
-  for (const w of warList) w.hungry = hungry;
+  // 1) worker pasivo cada 10s pero respetando CAP_WORKERS
+  const curWorkers = newCrits.filter(u=>u.role==='worker' && u.homeNestId===n.id).length;
+  if(now>=(n.nextSpawnAt??0)){
+    n.nextSpawnAt=(n.nextSpawnAt??now)+10;
+    if (curWorkers < CAP_WORKERS){
+      const baby=spawnCritter(rng,n.faction,n.x,n.y,'worker');
+      baby.homeNestId = n.id;
+      const thetaN=Math.random()*Math.PI*2; startMitosis(baby,n.x,n.y,thetaN,now,18,0.6);
+      toAdd.push(baby);
+    }
+  }
+
+  // 2) warriors por cada 10 de FOOD (disponible), respetando CAP_WARRIORS
+  let curW = countByRoleForNest(newCrits, n.id, 'warrior');
+  while ((n.food||0) >= 10){
+    if (curW >= CAP_WARRIORS) break;
+    n.food -= 10;
+    const w=spawnCritter(rng,n.faction,n.x,n.y,'warrior');
+    w.homeNestId = n.id;
+    const th=Math.random()*Math.PI*2; startMitosis(w,n.x,n.y,th,now,20,0.5);
+    toAdd.push(w); curW++;
+  }
+
+  // 3) guardians por CUMULATIVE FOOD (20/40/60), hasta CAP_GUARDIANS
+  n.guardiansSpawned = n.guardiansSpawned||0;
+  const desiredByCum = Math.min(CAP_GUARDIANS, Math.floor((n.cumFood||0) / 20));
+  while (n.guardiansSpawned < desiredByCum){
+    const g=spawnCritter(rng,n.faction,n.x,n.y,'guardian');
+    g.homeNestId = n.id;
+    const th=Math.random()*Math.PI*2; startMitosis(g,n.x,n.y,th,now,16,0.5);
+    toAdd.push(g);
+    n.guardiansSpawned++;
+  }
+
+  // 4) Reina al alcanzar 150 cumFood (una sola vez)
+  if (!n.queenSpawned && (n.cumFood||0) >= 150){
+    const spawned = spawnQueenWithGuards(rng, n, now);
+    for (const u of spawned) toAdd.push(u);
+    n.queenSpawned = true;
+  }
 }
 
-    }
 
     // Daño de asedio del behemoth a nidos enemigos (1 HP/s)
     for (const c of newCrits){ if (c.role!=='behemoth') continue;
@@ -888,7 +951,28 @@ const spd = baseSpeed * rallyBoost * hungerMul;        // ← CAMBIADO
         // cuerpo guardián + anillo de armadura
         ctx.beginPath(); ctx.arc(c.x,c.y,c.radius,0,Math.PI*2); ctx.fillStyle=c.color; ctx.globalAlpha = clamp((c.hp||0)/(c.maxHp||18),0.2,1); ctx.fill(); ctx.globalAlpha=1;
         ctx.beginPath(); ctx.arc(c.x,c.y,c.radius+2,0,Math.PI*2); ctx.strokeStyle="#9ca3af"; ctx.lineWidth=1.5; ctx.stroke();
-      } else if (c.role==="cocoon"){
+      } else if (c.role==="queen"){
+  // cuerpo
+  ctx.beginPath(); ctx.arc(c.x,c.y,c.radius,0,Math.PI*2);
+  ctx.fillStyle=c.color; ctx.globalAlpha = clamp((c.hp||0)/(c.maxHp||24),0.2,1); ctx.fill(); ctx.globalAlpha=1;
+  // “corona” simple
+  ctx.beginPath();
+  ctx.moveTo(c.x-6, c.y-c.radius-2);
+  ctx.lineTo(c.x-3, c.y-c.radius-7);
+  ctx.lineTo(c.x,   c.y-c.radius-2);
+  ctx.lineTo(c.x+3, c.y-c.radius-7);
+  ctx.lineTo(c.x+6, c.y-c.radius-2);
+  ctx.strokeStyle="#fbbf24"; ctx.lineWidth=1.5; ctx.stroke();
+  // aura leve
+  ctx.beginPath(); ctx.arc(c.x,c.y,c.radius+4,0,Math.PI*2);
+  ctx.strokeStyle="rgba(251,191,36,0.4)"; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+} else if (c.role==="qguard"){
+  ctx.beginPath(); ctx.arc(c.x,c.y,c.radius,0,Math.PI*2);
+  ctx.fillStyle=c.color; ctx.globalAlpha = clamp((c.hp||0)/(c.maxHp||24),0.2,1); ctx.fill(); ctx.globalAlpha=1;
+  // anillo
+  ctx.beginPath(); ctx.arc(c.x,c.y,c.radius+2,0,Math.PI*2);
+  ctx.strokeStyle="rgba(255,255,255,0.35)"; ctx.lineWidth=1; ctx.stroke();
+} else if (c.role==="cocoon"){
         // Cocoon: pulso que acelera
         const tLeft = Math.max(0, (c.evolveUntil||0) - now); const total = 20;
         const prog = clamp(1 - tLeft / Math.max(0.0001,total), 0, 1);
@@ -916,4 +1000,16 @@ const spd = baseSpeed * rallyBoost * hungerMul;        // ← CAMBIADO
       const bw=16, bh=3, bx=c.x-bw/2, by=c.y-c.radius-6;
       ctx.fillStyle="#1f2937"; ctx.fillRect(bx,by,bw,bh);
       ctx.fillStyle="#10b981"; ctx.fillRect(bx,by,bw*((c.hp||0)/(c.maxHp||10)),bh);
-      ctx.strokeStyle="rgba(255,255,255,0.25)"; ctx.lineWidth=1; ctx.
+         ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx, by, bw, bh);
+    } // ← cierra el for (const c of newCrits)
+  }, running); // ← cierra useAnimationFrame con el segundo parámetro
+
+  // === JSX: devolvemos el canvas centrado ===
+  return (
+    <div style={{ display: "grid", placeItems: "center", height: "100vh", background: "#0b1220" }}>
+      <canvas ref={canvasRef} width={W} height={H} />
+    </div>
+  );
+} // ← cierra function MicroLifeLite
